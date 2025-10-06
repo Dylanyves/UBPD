@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader, random_split
 from torch.amp import autocast, GradScaler
 from sklearn.model_selection import GroupKFold
 
-from train_utils import Criterion, Scheduler, Optimizer, dice_coef
+from src.train_utils import Criterion, Scheduler, Optimizer, dice_coef
 
 class Training:
     def __init__(self, exp_name, model, dataset, split_strategy, params, device, log_to_wandb=False):
@@ -38,7 +38,7 @@ class Training:
     def prepare_dataloader(self):
         """Prepare train/val splits."""
         if self.split_strategy == "random":
-            generator = torch.Generator().manual_seed(42)
+            generator = torch.Generator().manual_seed(111)
             train_size = int(0.8 * len(self.dataset))
             val_size = len(self.dataset) - train_size
             train_dataset, val_dataset = random_split(self.dataset, [train_size, val_size], generator=generator)
@@ -47,6 +47,15 @@ class Training:
             groups = [int(f.split("_")[0]) for f in self.dataset.json_files]
             gkf = GroupKFold(n_splits=5)
             train_idx, val_idx = list(gkf.split(groups, groups, groups))[0]
+            train_groups = [groups[i] for i in train_idx]
+            val_groups = [groups[i] for i in val_idx]
+            
+            print("=" * 80)
+            print(f"{len(train_idx)} images on training \nTrain group ids: {sorted(set(train_groups))}")
+            print()
+            print(f"{len(val_idx)} images on validation \nVal group ids: {sorted(set(val_groups))}")
+            print("=" * 80)
+
             train_dataset = torch.utils.data.Subset(self.dataset, train_idx)
             val_dataset = torch.utils.data.Subset(self.dataset, val_idx)
 
@@ -153,7 +162,7 @@ class Training:
                 break
 
         if best_state:
-            torch.save(best_state, f"{self.exp_name}_best.pth")
+            torch.save(best_state, f"./data/models/{self.exp_name}_best.pth")
             print(f"✅ Best model saved (epoch {self.best_epoch})")
 
         if self.log_to_wandb:
