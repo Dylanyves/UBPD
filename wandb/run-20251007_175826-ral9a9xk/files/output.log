@@ -1,0 +1,33 @@
+[Fold 5] [1/100] Train Loss=1.3642, Val Loss=6.8128, Train Dice=0.1292, Val Dice=0.0844
+[Fold 5] [2/100] Train Loss=0.9127, Val Loss=315.4156, Train Dice=0.1441, Val Dice=0.0806
+[Fold 5] [3/100] Train Loss=0.7659, Val Loss=65.1694, Train Dice=0.1453, Val Dice=0.0871
+[Fold 5] [4/100] Train Loss=0.6500, Val Loss=2.7659, Train Dice=0.1598, Val Dice=0.0401
+[Fold 5] [5/100] Train Loss=0.5827, Val Loss=1.0507, Train Dice=0.1629, Val Dice=0.0051
+[Fold 5] [6/100] Train Loss=0.5416, Val Loss=1.1229, Train Dice=0.1720, Val Dice=0.0000
+[Fold 5] [7/100] Train Loss=0.5080, Val Loss=1.1907, Train Dice=0.1672, Val Dice=0.0000
+[Fold 5] [8/100] Train Loss=0.4850, Val Loss=1.2097, Train Dice=0.1774, Val Dice=0.0000
+[Fold 5] [9/100] Train Loss=0.4611, Val Loss=1.2686, Train Dice=0.1770, Val Dice=0.0004
+[Fold 5] [10/100] Train Loss=0.4452, Val Loss=1.2184, Train Dice=0.1828, Val Dice=0.0071
+[Fold 5] [11/100] Train Loss=0.4337, Val Loss=0.9923, Train Dice=0.2090, Val Dice=0.0201
+[Fold 5] [12/100] Train Loss=0.4176, Val Loss=0.7931, Train Dice=0.2359, Val Dice=0.1100
+[Fold 5] [13/100] Train Loss=0.4187, Val Loss=0.6974, Train Dice=0.2365, Val Dice=0.0806
+[Fold 5] [14/100] Train Loss=0.4089, Val Loss=0.7524, Train Dice=0.2531, Val Dice=0.0616
+[Fold 5] [15/100] Train Loss=0.3952, Val Loss=0.6057, Train Dice=0.2624, Val Dice=0.2191
+[Fold 5] [16/100] Train Loss=0.3885, Val Loss=0.6210, Train Dice=0.2883, Val Dice=0.2158
+[Fold 5] [17/100] Train Loss=0.3694, Val Loss=0.8814, Train Dice=0.2980, Val Dice=0.0504
+[Fold 5] [18/100] Train Loss=0.3663, Val Loss=0.5481, Train Dice=0.2872, Val Dice=0.2084
+[Fold 5] [19/100] Train Loss=0.3660, Val Loss=0.7753, Train Dice=0.2945, Val Dice=0.2568
+[Fold 5] [20/100] Train Loss=0.3728, Val Loss=0.9504, Train Dice=0.2993, Val Dice=0.2516
+[Fold 5] [21/100] Train Loss=0.3716, Val Loss=0.5238, Train Dice=0.3025, Val Dice=0.2030
+[Fold 5] [22/100] Train Loss=0.3535, Val Loss=0.7358, Train Dice=0.3035, Val Dice=0.2299
+[Fold 5] [23/100] Train Loss=0.3385, Val Loss=0.6537, Train Dice=0.3222, Val Dice=0.1959
+[Fold 5] [24/100] Train Loss=0.3240, Val Loss=0.5785, Train Dice=0.3324, Val Dice=0.2810
+[Fold 5] [25/100] Train Loss=0.3073, Val Loss=0.6356, Train Dice=0.3480, Val Dice=0.2736
+[Fold 5] [26/100] Train Loss=0.3015, Val Loss=0.5694, Train Dice=0.3580, Val Dice=0.2668
+[Fold 5] [27/100] Train Loss=0.2952, Val Loss=0.6300, Train Dice=0.3799, Val Dice=0.2854
+[Fold 5] [28/100] Train Loss=0.2752, Val Loss=0.5510, Train Dice=0.3661, Val Dice=0.2778
+[Fold 5] [29/100] Train Loss=0.2604, Val Loss=0.5668, Train Dice=0.3966, Val Dice=0.2791
+[Fold 5] [30/100] Train Loss=0.2512, Val Loss=0.5723, Train Dice=0.4371, Val Dice=0.3028
+[Fold 5] [31/100] Train Loss=0.2587, Val Loss=0.5485, Train Dice=0.4505, Val Dice=0.3317
+[Fold 5] Early stopping at epoch 31
+✅ [Fold 5] Best model saved (epoch 21) -> ./data/models/628390_fold5_best.pth

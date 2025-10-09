@@ -2,8 +2,10 @@ import torch
 import torch.nn as nn
 import torchvision.transforms.functional as TF
 
+
 class DoubleConv(nn.Module):
     """(Conv → BN → ReLU) × 2"""
+
     def __init__(self, in_channels, out_channels):
         super().__init__()
         self.block = nn.Sequential(
@@ -36,7 +38,9 @@ class UNet(nn.Module):
 
         # Decoder
         for feature in reversed(features):
-            self.ups.append(nn.ConvTranspose2d(feature * 2, feature, kernel_size=2, stride=2))
+            self.ups.append(
+                nn.ConvTranspose2d(feature * 2, feature, kernel_size=2, stride=2)
+            )
             self.ups.append(DoubleConv(feature * 2, feature))
 
         # Output layer

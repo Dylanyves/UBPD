@@ -10,28 +10,31 @@ from PIL import Image, ImageDraw
 
 class BaseUBPDataset(Dataset):
     DEFAULT_CLASS_MAP = {
-        "dongmai":    1,  # artery
-        "jingmai":    2,  # vein
+        "dongmai": 1,  # artery
+        "jingmai": 2,  # vein
         "jirouzuzhi": 3,  # muscle
-        "shenjing":   4,  # nerve
+        "shenjing": 4,  # nerve
     }
 
-    def __init__(self,
-                 image_dir,
-                 json_dir,
-                 patient_ids=None,
-                 transform=None,
-                 target_transform=None,
-                 class_map=None,
-                 include_classes=None,
-                 keep_original_indices=True):
-        
+    def __init__(
+        self,
+        image_dir,
+        json_dir,
+        patient_ids=None,
+        transform=None,
+        target_transform=None,
+        class_map=None,
+        include_classes=None,
+        keep_original_indices=True,
+    ):
+
         self.image_dir = image_dir
         self.json_dir = json_dir
         self.transform = transform
         self.target_transform = target_transform
         self.class_map = (class_map or self.DEFAULT_CLASS_MAP).copy()
         self.keep_original_indices = keep_original_indices
+        self.include_classes = include_classes
 
         # Convert patient IDs to strings for filename matching
         self.patient_ids = {str(pid) for pid in patient_ids} if patient_ids else None
@@ -42,8 +45,14 @@ class BaseUBPDataset(Dataset):
         # If requested, remap included classes to contiguous indices {1..K}
         if not self.keep_original_indices and self.include_ids is not None:
             # Build a remap dict old_id -> new_id
-            ordered = list(self.include_ids) if isinstance(include_classes, (list, tuple)) else sorted(self.include_ids)
-            self._id_remap = {old_id: new_idx for new_idx, old_id in enumerate(ordered, start=1)}
+            ordered = (
+                list(self.include_ids)
+                if isinstance(include_classes, (list, tuple))
+                else sorted(self.include_ids)
+            )
+            self._id_remap = {
+                old_id: new_idx for new_idx, old_id in enumerate(ordered, start=1)
+            }
         else:
             self._id_remap = None
 
@@ -76,10 +85,10 @@ class BaseUBPDataset(Dataset):
                 else:
                     # also accept common English names mapped to defaults, if user passed English
                     aliases = {
-                        "artery":    "dongmai",
-                        "vein":      "jingmai",
-                        "muscle":    "jirouzuzhi",
-                        "nerve":     "shenjing",
+                        "artery": "dongmai",
+                        "vein": "jingmai",
+                        "muscle": "jirouzuzhi",
+                        "nerve": "shenjing",
                     }
                     if key in aliases and aliases[key] in self.class_map:
                         include_ids.add(self.class_map[aliases[key]])
@@ -155,7 +164,9 @@ class BaseUBPDataset(Dataset):
         base_name = os.path.splitext(json_filename)[0]
         img_path = os.path.join(self.image_dir, f"{base_name}.jpg")
         if not os.path.exists(img_path):
-            raise FileNotFoundError(f"Image file not found for {json_filename}: {img_path}")
+            raise FileNotFoundError(
+                f"Image file not found for {json_filename}: {img_path}"
+            )
 
         # Load image (grayscale) and mask
         image = Image.open(img_path).convert("L")
@@ -182,18 +193,22 @@ class BaseUBPDataset(Dataset):
 # ---- Derived Classes ---------------------------------------------------------
 class UBPDatasetTrain(BaseUBPDataset):
     """Training dataset excluding fixed test patients."""
+
     TEST_PATIENTS = {73, 28, 64, 94, 34, 22, 37, 14, 9, 8, 15, 5, 30, 10, 58}
 
     def __init__(self, image_dir, json_dir, patient_ids=None, **kwargs):
         if patient_ids is None:
             all_jsons = [f for f in os.listdir(json_dir) if f.endswith(".json")]
             all_patients = {f.split("_")[0] for f in all_jsons}
-            patient_ids = sorted(all_patients - {str(pid) for pid in self.TEST_PATIENTS})
+            patient_ids = sorted(
+                all_patients - {str(pid) for pid in self.TEST_PATIENTS}
+            )
         super().__init__(image_dir, json_dir, patient_ids=patient_ids, **kwargs)
 
 
 class UBPDatasetTest(BaseUBPDataset):
     """Fixed test dataset based on predefined patient IDs."""
+
     TEST_PATIENTS = {73, 28, 64, 94, 34, 22, 37, 14, 9, 8, 15, 5, 30, 10, 58}
 
     def __init__(self, image_dir, json_dir, **kwargs):

@@ -4,15 +4,16 @@ import torch
 from collections import OrderedDict
 from src.models.unet import UNet
 
+
 def str2bool(v):
     if isinstance(v, bool):
         return v
-    if v.lower() in ('true', 'yes', '1'):
+    if v.lower() in ("true", "yes", "1"):
         return True
-    elif v.lower() in ('false', 'no', '0'):
+    elif v.lower() in ("false", "no", "0"):
         return False
     else:
-        raise argparse.ArgumentTypeError('Boolean value expected.')
+        raise argparse.ArgumentTypeError("Boolean value expected.")
 
 
 def load_model(model_path, in_channels=1, num_classes=5, device="cuda"):

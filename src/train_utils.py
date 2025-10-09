@@ -1,47 +1,80 @@
 import torch.optim as optim
 import torch.nn as nn
 
-
 import torch
 import torch.nn.functional as F
 
+
 @torch.no_grad()
-def dice_coef(preds, targets, num_classes=5, eps=1e-6, include_background=True):
+def dice_coef(preds, targets, num_classes=5, eps=1e-6, include_background=False):
     """
     preds: logits [B,C,H,W] (float) OR hard labels [B,H,W] (long)
     targets: int labels [B,H,W] (long)
     """
     if preds.ndim == 4 and preds.dtype.is_floating_point:
         # logits -> probabilities
-        probs = torch.softmax(preds, dim=1)                         # [B,C,H,W]
+        probs = torch.softmax(preds, dim=1)  # [B,C,H,W]
     elif preds.ndim == 3 and preds.dtype in (torch.long, torch.int64):
         # hard labels -> one-hot then treat as 'probs'
-        probs = F.one_hot(preds, num_classes=num_classes).permute(0,3,1,2).float()
+        probs = F.one_hot(preds, num_classes=num_classes).permute(0, 3, 1, 2).float()
     else:
-        raise ValueError("preds must be logits [B,C,H,W] (float) or hard labels [B,H,W] (long)")
+        raise ValueError(
+            "preds must be logits [B,C,H,W] (float) or hard labels [B,H,W] (long)"
+        )
 
-    one_hot = F.one_hot(targets.long(), num_classes=num_classes).permute(0,3,1,2).float()
+    one_hot = (
+        F.one_hot(targets.long(), num_classes=num_classes).permute(0, 3, 1, 2).float()
+    )
 
     if not include_background:
-        probs   = probs[:, 1:, ...]
+        probs = probs[:, 1:, ...]
         one_hot = one_hot[:, 1:, ...]
 
-    dims = (0,2,3)
+    dims = (0, 2, 3)
     inter = (probs * one_hot).sum(dim=dims)
     denom = probs.sum(dim=dims) + one_hot.sum(dim=dims)
-    dice_per_class = (2*inter + eps) / (denom + eps)
+    dice_per_class = (2 * inter + eps) / (denom + eps)
     return dice_per_class.mean()
 
 
 class DiceLoss(nn.Module):
-    def __init__(self, eps=1e-6):
+    def __init__(self, eps=1e-6, mode="binary"):
         super().__init__()
         self.eps = eps
+        self.mode = mode
+
     def forward(self, preds, targets):
-        preds = torch.sigmoid(preds)
-        num = 2 * (preds * targets).sum(dim=(2,3)) + self.eps
-        den = preds.sum(dim=(2,3)) + targets.sum(dim=(2,3)) + self.eps
-        return 1 - (num / den).mean()
+        if self.mode == "binary":
+            # Binary segmentation: preds [B,1,H,W] or [B,H,W], targets [B,1,H,W] or [B,H,W]
+            preds = torch.sigmoid(preds)
+            if preds.ndim == 4 and preds.shape[1] == 1:
+                preds = preds[:, 0]
+            if targets.ndim == 4 and targets.shape[1] == 1:
+                targets = targets[:, 0]
+            num = 2 * (preds * targets).sum(dim=(1, 2)) + self.eps
+            den = preds.sum(dim=(1, 2)) + targets.sum(dim=(1, 2)) + self.eps
+            dice = num / den
+            return 1 - dice.mean()
+        elif self.mode == "multiclass":
+            # Multiclass segmentation: preds [B,C,H,W] (logits), targets [B,H,W] (long)
+            num_classes = preds.shape[1]
+            preds = torch.softmax(preds, dim=1)
+            targets_onehot = (
+                F.one_hot(targets.long(), num_classes=num_classes)
+                .permute(0, 3, 1, 2)
+                .float()
+            )
+            # Exclude background (assume class 0 is background)
+            preds = preds[:, 1:, ...]
+            targets_onehot = targets_onehot[:, 1:, ...]
+            dims = (0, 2, 3)
+            inter = (preds * targets_onehot).sum(dim=dims)
+            denom = preds.sum(dim=dims) + targets_onehot.sum(dim=dims)
+            dice_per_class = (2 * inter + self.eps) / (denom + self.eps)
+            return 1 - dice_per_class.mean()
+        else:
+            raise ValueError(f"Unknown DiceLoss mode: {self.mode}")
+
 
 class Criterion:
     def __new__(cls, name):
@@ -52,12 +85,15 @@ class Criterion:
             return nn.BCEWithLogitsLoss()
 
         elif name == "dice":
-            return DiceLoss()
+            return DiceLoss(mode="binary")
 
         elif name == "bcedice":
-            return lambda pred, mask: (
-                nn.BCEWithLogitsLoss()(pred, mask) + DiceLoss()(pred, mask)
-            ) / 2
+            return (
+                lambda pred, mask: (
+                    nn.BCEWithLogitsLoss()(pred, mask) + DiceLoss()(pred, mask)
+                )
+                / 2
+            )
 
         # Multi-class segmentation losses
         elif name in ["ce", "crossentropy", "cross_entropy"]:
@@ -65,13 +101,15 @@ class Criterion:
 
         elif name in ["cedice", "crossentropy_dice"]:
             # Combined CE + Dice for multi-class segmentation
-            return lambda pred, mask: (
-                nn.CrossEntropyLoss()(pred, mask)
-                + DiceLoss(mode="multiclass")(pred, mask)
-            ) / 2
+            return (
+                lambda pred, mask: (
+                    nn.CrossEntropyLoss()(pred, mask)
+                    + DiceLoss(mode="multiclass")(pred, mask)
+                )
+                / 2
+            )
 
         raise ValueError(f"❌ Unknown criterion: {name}")
-
 
 
 class Optimizer:
@@ -82,9 +120,10 @@ class Optimizer:
         elif name == "adamw":
             return optim.AdamW(model_params, lr=lr, weight_decay=weight_decay)
         elif name == "rmsprop":
-            return optim.RMSprop(model_params, lr=lr, alpha=0.9, weight_decay=weight_decay)
+            return optim.RMSprop(
+                model_params, lr=lr, alpha=0.9, weight_decay=weight_decay
+            )
         raise ValueError(f"Unknown optimizer: {name}")
-
 
 
 class Scheduler:
