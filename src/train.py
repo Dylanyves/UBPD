@@ -1,441 +1,375 @@
-import torch
-import copy
-import wandb
+import os, math, copy, torch, time
+import numpy as np
 import matplotlib.pyplot as plt
-import re
+import torch.nn as nn
+import torch.nn.functional as F
+import wandb
 
-from torch.utils.data import DataLoader, random_split, Subset
+from typing import Dict, Optional, Tuple
+from torch.utils.data import DataLoader
 from torch.amp import autocast, GradScaler
-from sklearn.model_selection import GroupKFold
-from torchvision import transforms
-from torchvision.transforms import InterpolationMode
+
+from src.dataset import UBPDataset
+from src.train_utils import (
+    _make_loss,
+    _make_optimizer,
+    _make_scheduler,
+    dice_coefficient,
+)
 
 
-from src.train_utils import Criterion, Scheduler, Optimizer, dice_coef
-from src.dataset import UBPDatasetTest
-from src.evaluate import Evaluate
+class Trainer:
+    """Trainer with fp16, best-only checkpoint, W&B logging, and early stopping."""
 
-
-class Training:
     def __init__(
         self,
-        exp_name,
-        model,
-        dataset,
-        split_strategy,
-        params,
-        device,
-        log_to_wandb=False,
+        exp_id: str,
+        fold_num: int,
+        model: nn.Module,
+        train_dataset: UBPDataset,
+        val_dataset: UBPDataset,
+        arguments: Dict,
     ):
-        self.exp_name = exp_name
-        self.model = model.to(device)
-        self.dataset = dataset
-        self.split_strategy = split_strategy.lower()
-        self.params = params
-        self.device = device
-        self.log_to_wandb = log_to_wandb
+        """Initialize trainer and resources."""
+        self.exp_id = str(exp_id)
+        self.fold_num = int(fold_num)
+        self.model = model
+        self.args = arguments or {}
 
-        # Instantiate components using __new__ factories
-        self.criterion = Criterion(params.get("criterion", "ce"))
-        self.optimizer = Optimizer(
-            params.get("optimizer", "adam"),
-            self.model.parameters(),
-            lr=params.get("learning_rate", 1e-3),
-            weight_decay=params.get("weight_decay", 1e-3),
+        self.device = str(
+            self.args.get("device", "cuda" if torch.cuda.is_available() else "cpu")
         )
-        self.scheduler = Scheduler(params.get("scheduler", None), self.optimizer)
-        self.scaler = GradScaler(enabled=params.get("half_precision", False))
+        self.epochs = int(self.args.get("epochs", 100))
+        self.batch_size = int(self.args.get("batch_size", 16))
+        self.half_precision = bool(self.args.get("half_precision", True))
 
-        # Tracking
-        self.best_val_loss = float("inf")
-        self.best_epoch = 0
-        self.early_stopping_counter = 0
+        self.ignore_empty = bool(self.args.get("ignore_empty", False))
+        self.num_workers = int(self.args.get("num_workers", 2))
+        self.pin_memory = bool(self.args.get("pin_memory", True))
+        self.grad_clip = float(self.args.get("grad_clip", 0.0))
+        self.compute_dice = bool(self.args.get("metric_dice", True))
 
-    # --------------------------------------------------------------------------
-    def prepare_dataloader(self):
-        """Prepare train/val splits."""
-        if self.split_strategy == "random":
-            generator = torch.Generator().manual_seed(111)
-            train_size = int(0.8 * len(self.dataset))
-            val_size = len(self.dataset) - train_size
-            train_dataset, val_dataset = random_split(
-                self.dataset, [train_size, val_size], generator=generator
+        # early stopping
+        self.patience = int(self.args.get("patience", 10))
+        self.restore_best_weights = True
+        self._epochs_since_improve = 0
+        self._best_state_dict = None
+
+        # checkpoints
+        self.save_dir = str(self.args.get("save_dir", "checkpoints"))
+        os.makedirs(self.save_dir, exist_ok=True)
+        self.best_filename = f"{self.exp_id}_fold_{self.fold_num}.pth"
+        self.save_weights_only = bool(self.args.get("save_weights_only", True))
+        self.best_path = os.path.join(self.save_dir, self.best_filename)
+
+        # monitor
+        self.monitor = str(self.args.get("monitor", "val_loss"))
+        self.monitor_mode = str(
+            self.args.get(
+                "monitor_mode", "min" if self.monitor == "val_loss" else "max"
             )
+        ).lower()
+        self.best_metric = math.inf if self.monitor_mode == "min" else -math.inf
 
-        elif self.split_strategy == "gkf":
-            groups = [int(f.split("_")[0]) for f in self.dataset.json_files]
-            gkf = GroupKFold(n_splits=5)
-            train_idx, val_idx = list(gkf.split(groups, groups, groups))[0]
-            train_groups = [groups[i] for i in train_idx]
-            val_groups = [groups[i] for i in val_idx]
+        # wandb
+        self.use_wandb = bool(self.args.get("use_wandb", False))
+        if self.use_wandb:
+            try:
+                api_key = os.getenv("WANDB_API_KEY")
+                wandb.login(key=api_key)
 
-            print("=" * 80)
-            print(
-                f"{len(train_idx)} images on training \nTrain group ids: {sorted(set(train_groups))}"
-            )
-            print()
-            print(
-                f"{len(val_idx)} images on validation \nVal group ids: {sorted(set(val_groups))}"
-            )
-            print("=" * 80)
+                name = f"{self.exp_id}_fold_{fold_num}"
+                wandb.init(
+                    project="ubpd",
+                    group=self.exp_id,
+                    name=name,
+                    config=self.args,
+                    reinit=True,
+                )
+                wandb.watch(
+                    self.model,
+                    log="gradients",
+                    log_freq=int(self.args.get("wandb_log_freq", 200)),
+                )
+            except Exception as e:
+                print(f"[wandb] Disabled: {e}")
 
-            train_dataset = torch.utils.data.Subset(self.dataset, train_idx)
-            val_dataset = torch.utils.data.Subset(self.dataset, val_idx)
+        # data loaders
+        collate_fn = self.args.get("collate_fn", None)
+        self.train_loader = DataLoader(
+            train_dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+            collate_fn=collate_fn,
+        )
+        self.val_loader = DataLoader(
+            val_dataset,
+            batch_size=self.args.get("val_batch_size", self.batch_size),
+            shuffle=False,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+            collate_fn=collate_fn,
+        )
 
+        # loss/optim/sched
+        num_classes = getattr(getattr(self.model, "outc", None), "conv", None)
+        num_classes = (
+            num_classes.out_channels
+            if isinstance(num_classes, nn.Conv2d)
+            else int(self.args.get("num_classes", 1))
+        )
+        self.criterion = _make_loss(self.args, num_classes)
+        self.model.to(self.device)
+        if (
+            isinstance(self.criterion, nn.BCEWithLogitsLoss)
+            and self.criterion.pos_weight is not None
+        ):
+            self.criterion.pos_weight = self.criterion.pos_weight.to(self.device)
+
+        self.optimizer = _make_optimizer(self.model.parameters(), self.args)
+        self.sched_type = self.args.get("scheduler", "none").lower()
+        steps_per_epoch = len(self.train_loader) if len(self.train_loader) > 0 else None
+        self.scheduler = _make_scheduler(
+            self.optimizer, self.args, steps_per_epoch=steps_per_epoch
+        )
+
+        # AMP scaler
+        self.scaler = GradScaler(enabled=self.half_precision and self.device == "cuda")
+
+    def _is_better(self, value: float) -> bool:
+        """Return True if current value improves best."""
+        return (
+            (value < self.best_metric)
+            if self.monitor_mode == "min"
+            else (value > self.best_metric)
+        )
+
+    def _save_best(self, epoch: int, metrics: Dict[str, float]):
+        """Save best-only checkpoint and optionally log to wandb."""
+        if self.save_weights_only:
+            torch.save(self.model.state_dict(), self.best_path)
         else:
-            raise ValueError(f"Unknown split strategy: {self.split_strategy}")
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "state_dict": self.model.state_dict(),
+                    "optimizer": self.optimizer.state_dict(),
+                    "args": self.args,
+                    "metrics": metrics,
+                },
+                self.best_path,
+            )
+        if self.use_wandb:
+            try:
+                art_name = self.args.get(
+                    "wandb_artifact_name", os.path.splitext(self.best_filename)[0]
+                )
+                art = wandb.Artifact(art_name, type="model")
+                art.add_file(self.best_path)
+                wandb.log_artifact(art)
+            except Exception as e:
+                print(f"[wandb] Artifact save failed: {e}")
 
-        train_loader = DataLoader(
-            train_dataset, batch_size=self.params["batch_size"], shuffle=True
-        )
-        val_loader = DataLoader(
-            val_dataset, batch_size=self.params["batch_size"], shuffle=False
-        )
-        return train_loader, val_loader
+    def train(self) -> Dict:
+        """Run training with early stopping and best-only saving, logging to W&B."""
+        history = {"train_loss": [], "val_loss": [], "train_dice": [], "val_dice": []}
+        stopped_early = False
 
-    # --------------------------------------------------------------------------
-    def train_one_epoch(self, loader):
+        total_time_start = time.perf_counter()
+        total_train_time = 0.0
+        total_validation_time = 0.0
+
+        for epoch in range(1, self.epochs + 1):
+            # ---- Train ----
+            t0 = time.perf_counter()
+            tr_loss, tr_dice = self.train_one_epoch(epoch)
+            train_time = time.perf_counter() - t0
+            total_train_time += train_time
+
+            # ---- Validate ----
+            t1 = time.perf_counter()
+            vl_loss, vl_dice = self.validate_one_epoch(epoch)
+            validation_time = time.perf_counter() - t1
+            total_validation_time += validation_time
+
+            # ---- Bookkeeping ----
+            history["train_loss"].append(tr_loss)
+            history["val_loss"].append(vl_loss)
+            history["train_dice"].append(tr_dice)
+            history["val_dice"].append(vl_dice)
+
+            # Scheduler step
+            if self.scheduler:
+                if self.sched_type == "onecycle":
+                    pass
+                elif self.sched_type == "plateau":
+                    metric = (
+                        vl_dice
+                        if self.args.get("plateau_mode", "min") == "max"
+                        else vl_loss
+                    )
+                    self.scheduler.step(metric)
+                else:
+                    self.scheduler.step()
+
+            # Check best / early stopping
+            current = {
+                "train_loss": tr_loss,
+                "val_loss": vl_loss,
+                "train_dice": tr_dice,
+                "val_dice": vl_dice,
+            }
+            monitored_val = current[self.monitor]
+            improved = self._is_better(monitored_val)
+            if improved:
+                self.best_metric = monitored_val
+                self._epochs_since_improve = 0
+                self._best_state_dict = copy.deepcopy(self.model.state_dict())
+                self._save_best(epoch, current)
+            else:
+                self._epochs_since_improve += 1
+
+            # ---- W&B logging (exact fields requested) ----
+            if self.use_wandb:
+                current_lr = float(self.optimizer.param_groups[0]["lr"])
+                total_time = time.perf_counter() - total_time_start
+                # Names mapped to your requested keys:
+                epoch_loss = tr_loss
+                avg_train_dice = tr_dice
+                avg_val_loss = vl_loss
+                avg_val_dice = vl_dice
+                wandb.log(
+                    {
+                        "epoch": epoch,  # or epoch+1 if you prefer 1-based
+                        "learning_rate": current_lr,
+                        "total_time": total_time,
+                        "train/loss": epoch_loss,
+                        "train/dice_mean": avg_train_dice,
+                        "validation/loss": avg_val_loss,
+                        "validation/dice_mean": avg_val_dice,
+                        "train/time": train_time,
+                        "train/time_total": total_train_time,
+                        "validation/time": validation_time,
+                        "validation/time_total": total_validation_time,
+                    }
+                )
+
+            # ---- Console print ----
+            print(
+                f"Epoch {epoch:03d}/{self.epochs} | "
+                f"lr={self.optimizer.param_groups[0]['lr']:.3e} "
+                f"train_loss={tr_loss:.4f} val_loss={vl_loss:.4f} "
+                f"train_dice={tr_dice:.4f} val_dice={vl_dice:.4f} "
+                f"{'[BEST]' if improved else ''} "
+                f"(patience {self._epochs_since_improve}/{self.patience})"
+            )
+
+            if self._epochs_since_improve >= self.patience:
+                print(
+                    f"⏹️ Early stopping triggered (no improvement for {self.patience} epochs)."
+                )
+                stopped_early = True
+                break
+
+        if self.restore_best_weights and self._best_state_dict is not None:
+            self.model.load_state_dict(self._best_state_dict)
+
+        if self.use_wandb is not None:
+            if stopped_early:
+                wandb.summary["early_stopped"] = True
+            wandb.finish()
+        return history
+
+    def validate(self) -> Tuple[float, float]:
+        """Run a full validation pass."""
+        return self.validate_one_epoch(epoch=None)
+
+    def train_one_epoch(self, epoch: Optional[int] = None) -> Tuple[float, float]:
+        """Train for one epoch."""
         self.model.train()
-        total_loss, total_dice = 0.0, 0.0
-        for images, masks in loader:
-            images = images.to(self.device)
-            masks = masks.squeeze(1).long().to(self.device)  # ✅ fix dtype + shape
-            self.optimizer.zero_grad()
+        running_loss = running_metric = 0.0
+        n_batches = 0
+
+        for images, targets in self.train_loader:
+            images = images.to(self.device, non_blocking=True)
+            targets = targets.to(self.device, non_blocking=True)
+            self.optimizer.zero_grad(set_to_none=True)
 
             with autocast(
                 device_type=self.device,
-                enabled=self.params.get("half_precision", False),
+                dtype=torch.float16,
+                enabled=self.half_precision and self.device == "cuda",
             ):
-                outputs = self.model(images)
-                loss = self.criterion(outputs, masks)
+                logits = self.model(images)
+                if logits.shape[1] == 1 and targets.dim() == 3:
+                    loss = (
+                        self.criterion(logits.squeeze(1), targets.float())
+                        if isinstance(self.criterion, nn.BCEWithLogitsLoss)
+                        else self.criterion(logits, targets)
+                    )
+                else:
+                    loss = self.criterion(logits, targets)
 
-            if self.params.get("half_precision", False):
-                self.scaler.scale(loss).backward()
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            else:
-                loss.backward()
-                self.optimizer.step()
+            self.scaler.scale(loss).backward()
+            if self.grad_clip > 0:
+                self.scaler.unscale_(self.optimizer)
+                nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
 
-            # Multiclass prediction -> argmax
-            preds = outputs.argmax(dim=1)  # (B,H,W)
-            total_loss += loss.item()
-            total_dice += dice_coef(preds, masks).item()
+            if self.scheduler and self.sched_type == "onecycle":
+                self.scheduler.step()
 
-        n = len(loader)
-        return total_loss / n, total_dice / n
+            running_loss += loss.item()
+            if self.compute_dice:
+                with torch.no_grad():
+                    running_metric += dice_coefficient(
+                        logits,
+                        targets,
+                        include_background=False,
+                        ignore_empty=self.ignore_empty,
+                    ).item()
+            n_batches += 1
 
-    # --------------------------------------------------------------------------
-    def validate_one_epoch(self, loader):
+        return running_loss / max(1, n_batches), (
+            running_metric / max(1, n_batches) if self.compute_dice else float("nan")
+        )
+
+    def validate_one_epoch(self, epoch: Optional[int] = None) -> Tuple[float, float]:
+        """Validate for one epoch."""
         self.model.eval()
-        total_loss, total_dice = 0.0, 0.0
+        running_loss = running_metric = 0.0
+        n_batches = 0
         with torch.no_grad():
-            for images, masks in loader:
-                images = images.to(self.device)
-                masks = (
-                    masks.squeeze(1).long().to(self.device)
-                )  # <-- ensure Long & (B,H,W)
-
-                outputs = self.model(images)  # (B,C,H,W)
-                loss = self.criterion(outputs, masks)
-
-                preds = outputs.argmax(dim=1)  # (B,H,W)
-                total_loss += loss.item()
-                total_dice += dice_coef(preds, masks).item()
-
-        n = len(loader)
-        return total_loss / n, total_dice / n
-
-        # --------------------------------------------------------------------------
-
-    def _get_groups(self):
-        """
-        Returns a list of group (patient) ids with len == len(dataset).
-        Change this to match how your dataset stores patient IDs.
-        Priority:
-          1) dataset.patient_ids
-          2) dataset.groups
-          3) parse from dataset.json_files (e.g., '123_*.json' -> 123)
-        """
-        if hasattr(self.dataset, "patient_ids"):
-            return list(self.dataset.patient_ids)
-        if hasattr(self.dataset, "groups"):
-            return list(self.dataset.groups)
-        if hasattr(self.dataset, "json_files"):
-            ids = []
-            for f in self.dataset.json_files:
-                s = str(f)
-                m = re.search(r"\d+", s)  # grab first number as patient id
-                ids.append(m.group(0) if m else s.split("_")[0])
-            return ids
-        raise AttributeError(
-            "Dataset must expose 'patient_ids' or 'groups' or 'json_files' to derive groups."
-        )
-
-    def _make_loaders_from_indices(self, train_idx, val_idx):
-        train_ds = Subset(self.dataset, train_idx)
-        val_ds = Subset(self.dataset, val_idx)
-        train_loader = DataLoader(
-            train_ds, batch_size=self.params["batch_size"], shuffle=True
-        )
-        val_loader = DataLoader(
-            val_ds, batch_size=self.params["batch_size"], shuffle=False
-        )
-        return train_loader, val_loader
-
-    def _unique_sorted(self, seq):
-        """Return unique values as a sorted list; works for str/int patient ids."""
-        try:
-            return sorted(set(seq), key=lambda x: (str(type(x)), x))
-        except TypeError:
-            return sorted(set(map(str, seq)))
-
-    # --------------------------------------------------------------------------
-    # --------------------------------------------------------------------------
-    def train(self):
-        # -------------------------
-        # RANDOM 80/20 single split
-        # -------------------------
-        if self.split_strategy != "gkf":
-            train_loader, val_loader = self.prepare_dataloader()
-
-            if self.log_to_wandb:
-                wandb.init(project="UBPD", name=self.exp_name, config=self.params)
-                wandb.watch(self.model, log="all")
-
-            best_state = None
-            for epoch in range(1, self.params["max_epoch"] + 1):
-                train_loss, train_dice = self.train_one_epoch(train_loader)
-                val_loss, val_dice = self.validate_one_epoch(val_loader)
-
-                if self.scheduler:
-                    if isinstance(
-                        self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau
-                    ):
-                        self.scheduler.step(val_loss)
+            for images, targets in self.val_loader:
+                images = images.to(self.device, non_blocking=True)
+                targets = targets.to(self.device, non_blocking=True)
+                with autocast(
+                    device_type=self.device,
+                    dtype=torch.float16,
+                    enabled=self.half_precision and self.device == "cuda",
+                ):
+                    logits = self.model(images)
+                    if logits.shape[1] == 1 and targets.dim() == 3:
+                        loss = (
+                            self.criterion(logits.squeeze(1), targets.float())
+                            if isinstance(self.criterion, nn.BCEWithLogitsLoss)
+                            else self.criterion(logits, targets)
+                        )
                     else:
-                        self.scheduler.step()
+                        loss = self.criterion(logits, targets)
 
-                print(
-                    f"[{epoch}/{self.params['max_epoch']}] "
-                    f"Train Loss={train_loss:.4f}, Val Loss={val_loss:.4f}, "
-                    f"Train Dice={train_dice:.4f}, Val Dice={val_dice:.4f}"
-                )
-
-                if self.log_to_wandb:
-                    wandb.log(
-                        {
-                            "epoch": epoch,
-                            "train_loss": train_loss,
-                            "val_loss": val_loss,
-                            "train_dice": train_dice,
-                            "val_dice": val_dice,
-                            "lr": self.optimizer.param_groups[0]["lr"],
-                        }
-                    )
-
-                # Early stopping
-                if val_loss < self.best_val_loss:
-                    self.best_val_loss = val_loss
-                    best_state = self.model.state_dict()
-                    self.best_epoch = epoch
-                    self.early_stopping_counter = 0
-                else:
-                    self.early_stopping_counter += 1
-
-                if self.params.get(
-                    "early_stopping", True
-                ) and self.early_stopping_counter >= self.params.get("patience", 5):
-                    print(f"Early stopping at epoch {epoch}")
-                    break
-
-            if best_state:
-                torch.save(best_state, f"./data/models/{self.exp_name}_best.pth")
-                print(f"✅ Best model saved (epoch {self.best_epoch})")
-                # 🔹 Load the best weights back into the model for evaluation
-                self.model.load_state_dict(best_state)
-                self.model.eval()
-
-                # 🔹 Run test evaluation for this fold
-                print(f"🔎 [Fold {fold}] Evaluating on test set...")
-                self.evaluate_on_test(self.model)
-
-            if self.log_to_wandb:
-                wandb.finish()
-            return  # ---- end non-GKF path ----
-
-        # -------------------------
-        # 5-fold GroupKFold training
-        # -------------------------
-        # Save initial weights so each fold starts from the same initialization
-        init_state = copy.deepcopy(self.model.state_dict())
-
-        groups = self._get_groups()
-        gkf = GroupKFold(n_splits=5)
-
-        fold_metrics = []  # collect per-fold best results
-
-        for fold, (train_idx, val_idx) in enumerate(
-            gkf.split(X=groups, y=groups, groups=groups), 1
-        ):
-            print("\n" + "=" * 80)
-            print(f"📦 Fold {fold}/5 | Train={len(train_idx)} | Val={len(val_idx)}")
-            print(f"Train groups: {sorted(set([groups[i] for i in train_idx]))}")
-            print(f"Val   groups: {sorted(set([groups[i] for i in val_idx]))}")
-            print("=" * 80)
-
-            # Reset model + optimizer/scheduler/scaler + trackers for this fold
-            self.model.load_state_dict(init_state)
-            self.model.to(self.device)
-            # re-create optimizer & scheduler to reset their states
-            self.optimizer = Optimizer(
-                self.params.get("optimizer", "adam"),
-                self.model.parameters(),
-                lr=self.params.get("learning_rate", 1e-3),
-                weight_decay=self.params.get("weight_decay", 1e-3),
-            )
-            self.scheduler = Scheduler(
-                self.params.get("scheduler", None), self.optimizer
-            )
-            self.scaler = GradScaler(enabled=self.params.get("half_precision", False))
-            self.best_val_loss = float("inf")
-            self.best_epoch = 0
-            self.early_stopping_counter = 0
-
-            train_loader, val_loader = self._make_loaders_from_indices(
-                train_idx, val_idx
-            )
-
-            # W&B (one run per fold)
-            if self.log_to_wandb:
-                run_name = f"{self.exp_name}-fold{fold}"
-                wandb.init(
-                    project="UBPD", name=run_name, config={**self.params, "fold": fold}
-                )
-                wandb.watch(self.model, log="all")
-
-            best_state = None
-            for epoch in range(1, self.params["max_epoch"] + 1):
-                train_loss, train_dice = self.train_one_epoch(train_loader)
-                val_loss, val_dice = self.validate_one_epoch(val_loader)
-
-                if self.scheduler:
-                    if isinstance(
-                        self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau
-                    ):
-                        self.scheduler.step(val_loss)
-                    else:
-                        self.scheduler.step()
-
-                print(
-                    f"[Fold {fold}] [{epoch}/{self.params['max_epoch']}] "
-                    f"Train Loss={train_loss:.4f}, Val Loss={val_loss:.4f}, "
-                    f"Train Dice={train_dice:.4f}, Val Dice={val_dice:.4f}"
-                )
-
-                if self.log_to_wandb:
-                    wandb.log(
-                        {
-                            "fold": fold,
-                            "epoch": epoch,
-                            "train_loss": train_loss,
-                            "val_loss": val_loss,
-                            "train_dice": train_dice,
-                            "val_dice": val_dice,
-                            "lr": self.optimizer.param_groups[0]["lr"],
-                        }
-                    )
-
-                # Early stopping (per fold)
-                if val_loss < self.best_val_loss:
-                    self.best_val_loss = val_loss
-                    best_state = copy.deepcopy(self.model.state_dict())
-                    self.best_epoch = epoch
-                    self.early_stopping_counter = 0
-                else:
-                    self.early_stopping_counter += 1
-
-                if self.params.get(
-                    "early_stopping", True
-                ) and self.early_stopping_counter >= self.params.get("patience", 5):
-                    print(f"[Fold {fold}] Early stopping at epoch {epoch}")
-                    break
-
-            # Save best model per fold
-            if best_state:
-                out_path = f"./data/models/{self.exp_name}_fold{fold}_best.pth"
-                torch.save(best_state, out_path)
-                print(
-                    f"✅ [Fold {fold}] Best model saved (epoch {self.best_epoch}) -> {out_path}"
-                )
-                # 🔹 Load the best weights back into the model for evaluation
-                self.model.load_state_dict(best_state)
-                self.model.eval()
-
-                # 🔹 Run test evaluation for this fold
-                print(f"🔎 [Fold {fold}] Evaluating on test set...")
-                self.evaluate_on_test(self.model)
-
-            # Log the best result for this fold
-            fold_metrics.append(
-                {
-                    "fold": fold,
-                    "best_epoch": self.best_epoch,
-                    "best_val_loss": float(self.best_val_loss),
-                }
-            )
-
-            if self.log_to_wandb:
-                wandb.summary["best_val_loss"] = float(self.best_val_loss)
-                wandb.summary["best_epoch"] = self.best_epoch
-                wandb.finish()
-
-        # After all folds
-        print("\nCV summary (best val loss per fold):")
-        for m in fold_metrics:
-            print(
-                f"  Fold {m['fold']}: loss={m['best_val_loss']:.5f} @ epoch {m['best_epoch']}"
-            )
-        mean_loss = sum(m["best_val_loss"] for m in fold_metrics) / len(fold_metrics)
-        print(f"➡️  Mean best val loss across folds: {mean_loss:.5f}")
-
-    def evaluate_on_test(self, model):
-
-        TARGET_SIZE = (512, 512)
-
-        image_transform = transforms.Compose(
-            [transforms.ToTensor(), transforms.Resize(TARGET_SIZE, antialias=True)]
+                running_loss += loss.item()
+                if self.compute_dice:
+                    running_metric += dice_coefficient(
+                        logits,
+                        targets,
+                        include_background=False,
+                        ignore_empty=self.ignore_empty,
+                    ).item()
+                n_batches += 1
+        return running_loss / max(1, n_batches), (
+            running_metric / max(1, n_batches) if self.compute_dice else float("nan")
         )
-
-        mask_transform = transforms.Compose(
-            [
-                transforms.Resize(TARGET_SIZE, interpolation=InterpolationMode.NEAREST),
-                transforms.PILToTensor(),
-            ]
-        )
-
-        # TODO: changing the classes will result in CUDA error
-        include_classes = [1, 2, 3, 4]
-        out_channels = len(include_classes) + 1
-        image_dir = "./data/dataset/images"
-        json_dir = "./data/dataset/labels/json_train"
-
-        test_dataset = UBPDatasetTest(
-            image_dir,
-            json_dir,
-            transform=image_transform,
-            target_transform=mask_transform,
-            include_classes=include_classes,
-        )
-
-        test_loader = DataLoader(
-            test_dataset, batch_size=4, shuffle=False, num_workers=2
-        )
-        evaluator = Evaluate(
-            model=model, dataloader=test_loader, device="cuda", num_classes=out_channels
-        )
-        mean_dice, per_class = evaluator.evaluate_dice_score()
-        print(f"\nMean Dice (no background): {mean_dice:.4f}")
-
-        for cid, (name, score) in per_class.items():
-            print(f"Class {cid:>2} ({name:<10}): Dice = {score:.4f}")

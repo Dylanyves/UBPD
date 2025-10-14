@@ -11,3 +11,12 @@ wheels/
 
 # Ignore dataset and large data files
 /data/
+
+.env
+env/
+
+wandb/
+/wandb
+
+/checkpoints
+checkpoints/
