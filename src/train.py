@@ -276,7 +276,7 @@ class Trainer:
         if self.restore_best_weights and self._best_state_dict is not None:
             self.model.load_state_dict(self._best_state_dict)
 
-        if self.use_wandb is not None:
+        if self.use_wandb:
             if stopped_early:
                 wandb.summary["early_stopped"] = True
             wandb.finish()

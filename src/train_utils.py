@@ -67,7 +67,6 @@ def _make_scheduler(optimizer, args: Dict, steps_per_epoch: Optional[int] = None
             threshold=threshold,
             cooldown=cooldown,
             min_lr=min_lr,
-            verbose=False,
         )
     return None
 

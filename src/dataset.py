@@ -355,6 +355,55 @@ class UBPDataset(Dataset):
         plt.tight_layout()
         plt.show()
 
+
+    def print_stats(self) -> None:
+        total = len(self.json_files)
+        if total == 0:
+            print("No images in dataset.")
+            return
+
+        # Which original class IDs (1..4) to report?
+        if self.include_ids is None:
+            report_ids = sorted(self.class_map.values())  # all
+        else:
+            report_ids = sorted(self.include_ids)
+
+        # Build helpers: orig_id -> canonical key ('dongmai', ...) and English name ('artery', ...)
+        inv_map = {v: k for k, v in self.class_map.items()}
+        id_to_key = {cid: inv_map.get(cid, None) for cid in report_ids}
+        id_to_en = {cid: self._en_names.get(id_to_key[cid], f"class_{cid}") for cid in report_ids}
+
+        # Counters: count image-level presence per class
+        present_counts = {cid: 0 for cid in report_ids}
+
+        for jf in self.json_files:
+            data = self._load_json(jf)
+            # Collect which *original* class IDs appear in this image
+            present_in_image = set()
+            for shp in data.get("shapes", []):
+                cid = self._label_to_id(shp.get("label", ""))
+                if cid is None:
+                    continue
+                # Respect include filter (if any)
+                if self.include_ids is not None and cid not in self.include_ids:
+                    continue
+                present_in_image.add(cid)
+
+            # Increment once per class if present in this image
+            for cid in report_ids:
+                if cid in present_in_image:
+                    present_counts[cid] += 1
+
+        # Pretty print (aligned)
+        label_width = max(len(id_to_en[cid].capitalize()) for cid in report_ids) if report_ids else 0
+        count_width = len(str(total))
+
+        for cid in report_ids:
+            name = id_to_en[cid].capitalize().ljust(label_width)
+            print(f"{name}  present: {present_counts[cid]:>{count_width}}/{total} images")
+
+
+
     # -------------------- torch dataset API --------------------
 
     def __len__(self):

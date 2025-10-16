@@ -272,7 +272,7 @@ class Evaluator:
     @torch.no_grad()
     def visualize_ranked(
         self,
-        image_name: str,
+        image_name: str ="img",
         save_dir: Optional[str] = None,
         alpha: float = 0.45,
     ):
