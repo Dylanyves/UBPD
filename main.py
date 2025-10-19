@@ -2,6 +2,8 @@ import argparse
 import random
 import numpy as np
 import torch
+import wandb
+import os
 
 from src.helper import (
     set_seed,
@@ -95,6 +97,18 @@ def experiment(variants):
     fold_results = []  # store per-fold evaluator outputs (dicts)
 
     for fold, (train_ids, val_ids) in enumerate(cv_folds_pids, start=1):
+        if variants["use_wandb"]:
+            name = f"{exp_id}_fold_{fold}"
+            api_key = os.getenv("WANDB_API_KEY")
+            wandb.login(key=api_key)
+            wandb.init(
+                project="ubpd",
+                group=exp_id,
+                name=name,
+                config=variants,
+                reinit=True,
+            )
+
         print(f"\n📂 Fold {fold}/{len(cv_folds_pids)}")
         print(f"  Train patient IDs: {train_ids}")
         print(f"  Val   patient IDs: {val_ids}")
@@ -180,6 +194,10 @@ def experiment(variants):
         print("\n⚠️ No per-class stats available to aggregate.")
 
     print("\n✅ Experiment complete across folds.")
+
+    if variants["use_wandb"]:
+        wandb.finish()
+
     return {
         "histories": all_histories,
         "test_dataset": test_dataset,

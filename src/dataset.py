@@ -355,7 +355,6 @@ class UBPDataset(Dataset):
         plt.tight_layout()
         plt.show()
 
-
     def print_stats(self) -> None:
         total = len(self.json_files)
         if total == 0:
@@ -371,7 +370,10 @@ class UBPDataset(Dataset):
         # Build helpers: orig_id -> canonical key ('dongmai', ...) and English name ('artery', ...)
         inv_map = {v: k for k, v in self.class_map.items()}
         id_to_key = {cid: inv_map.get(cid, None) for cid in report_ids}
-        id_to_en = {cid: self._en_names.get(id_to_key[cid], f"class_{cid}") for cid in report_ids}
+        id_to_en = {
+            cid: self._en_names.get(id_to_key[cid], f"class_{cid}")
+            for cid in report_ids
+        }
 
         # Counters: count image-level presence per class
         present_counts = {cid: 0 for cid in report_ids}
@@ -395,14 +397,18 @@ class UBPDataset(Dataset):
                     present_counts[cid] += 1
 
         # Pretty print (aligned)
-        label_width = max(len(id_to_en[cid].capitalize()) for cid in report_ids) if report_ids else 0
+        label_width = (
+            max(len(id_to_en[cid].capitalize()) for cid in report_ids)
+            if report_ids
+            else 0
+        )
         count_width = len(str(total))
 
         for cid in report_ids:
             name = id_to_en[cid].capitalize().ljust(label_width)
-            print(f"{name}  present: {present_counts[cid]:>{count_width}}/{total} images")
-
-
+            print(
+                f"{name}  present: {present_counts[cid]:>{count_width}}/{total} images"
+            )
 
     # -------------------- torch dataset API --------------------
 

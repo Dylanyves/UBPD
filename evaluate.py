@@ -14,6 +14,7 @@ Examples:
   uv run evaluate.py --model_id 616483 --model_name unetpp --cv --include_classes 2 4
   uv run evaluate.py --model_id 616483 --include_classes 4 --show_plot
 """
+
 from typing import List, Tuple, Dict, Optional
 import argparse
 import glob
@@ -34,6 +35,7 @@ from src.evaluate import Evaluator
 
 
 # ------------------------------- Checkpoint discovery -------------------------------
+
 
 def _top_level_patterns(model_id: str, cv: bool) -> List[str]:
     """Strict patterns in ./checkpoints (top-level files)."""
@@ -77,6 +79,7 @@ def _find_model_paths(model_id: str, cv: bool) -> List[str]:
 
 # --------------------------- Class remap & dataset builders --------------------------
 
+
 def _resolve_num_classes_and_remap(include_classes: List[int]) -> Tuple[int, bool]:
     """
     Mirror main.py:
@@ -95,7 +98,7 @@ def _build_test_dataset(
     image_size: int,
     keep_original_indices: bool,
     seed: int,
-    test_pids: List[int]
+    test_pids: List[int],
 ) -> UBPDataset:
     """
     Build the test dataset exactly like in main.py:
@@ -105,7 +108,6 @@ def _build_test_dataset(
     """
     # _, test_pids = get_train_test_pids(seed=seed)
     paired_val_tf = _make_paired_transform(size=image_size, aug=False)
-
 
     test_dataset = UBPDataset(
         p_ids=test_pids,
@@ -118,7 +120,9 @@ def _build_test_dataset(
     return test_dataset
 
 
-def _make_name_mappings(include_classes: List[int], keep_original_indices: bool) -> Tuple[Dict[int, str], Dict[int, str]]:
+def _make_name_mappings(
+    include_classes: List[int], keep_original_indices: bool
+) -> Tuple[Dict[int, str], Dict[int, str]]:
     """
     Return:
       - id_to_raw: remapped CID (1..K) -> raw dataset key ('dongmai', 'jingmai', ...)
@@ -142,6 +146,7 @@ def _make_name_mappings(include_classes: List[int], keep_original_indices: bool)
 
 
 # --------------------------------- Evaluation core ----------------------------------
+
 
 def evaluate_model_files(
     model_paths: List[str],
@@ -171,7 +176,7 @@ def evaluate_model_files(
         image_size=image_size,
         keep_original_indices=keep_original_indices,
         seed=seed,
-        test_pids=test_pids
+        test_pids=test_pids,
     )
 
     print(f"Number of images in test set: {len(test_dataset)}")
@@ -180,11 +185,15 @@ def evaluate_model_files(
     id2raw, id2en = _make_name_mappings(include_classes, keep_original_indices)
 
     print("\n=== Evaluation Config ===")
-    print(f"Included classes      : {include_classes}  (1=artery, 2=vein, 3=muscle, 4=nerve)")
+    print(
+        f"Included classes      : {include_classes}  (1=artery, 2=vein, 3=muscle, 4=nerve)"
+    )
     if keep_original_indices:
         print("Remap policy          : binary (no remap, single foreground channel)")
     else:
-        print("Remap policy          : remap to contiguous IDs (0=bg, 1..K=selected in given order)")
+        print(
+            "Remap policy          : remap to contiguous IDs (0=bg, 1..K=selected in given order)"
+        )
     print(f"Model architecture    : {model_name}")
     print(f"Model num_classes     : {num_classes_for_model}")
     print(f"Test images           : {len(test_dataset)}")
@@ -219,13 +228,17 @@ def evaluate_model_files(
         overall = res.get("overall", {})
         mean = overall.get("mean", float("nan"))
         std = overall.get("std", float("nan"))
-        print(f"Result for {os.path.basename(mp)}: overall mean={mean:.4f}, std={std:.4f}")
+        print(
+            f"Result for {os.path.basename(mp)}: overall mean={mean:.4f}, std={std:.4f}"
+        )
         evaluator_results.append(res)
 
     return evaluator_results, id2en
 
 
-def aggregate_and_print(evaluator_results: List[dict], id_to_en: Optional[Dict[int, str]] = None):
+def aggregate_and_print(
+    evaluator_results: List[dict], id_to_en: Optional[Dict[int, str]] = None
+):
     overall_mean, overall_std, per_class = aggregate_fold_metrics(evaluator_results)
 
     print("\n=== Aggregated Results ===")
@@ -252,6 +265,7 @@ def aggregate_and_print(evaluator_results: List[dict], id_to_en: Optional[Dict[i
 
 # --------------------------------------- CLI ----------------------------------------
 
+
 def main():
     parser = argparse.ArgumentParser(description="Evaluate UBPD models")
     parser.add_argument(
@@ -259,7 +273,7 @@ def main():
         type=str,
         required=True,
         help="Model identifier. Looks for <id>_fold_*.pth or <id>.pth in ./checkpoints, "
-             "or falls back to ./checkpoints/<id>/*.pth.",
+        "or falls back to ./checkpoints/<id>/*.pth.",
     )
     parser.add_argument(
         "--model_name",
@@ -343,7 +357,6 @@ def main():
     if args.u2:
         test_pids = [79, 77, 71, 63, 51, 1, 81, 61]
 
-
     evaluator_results, id_to_en = evaluate_model_files(
         model_paths=model_paths,
         model_name=args.model_name,
@@ -353,7 +366,7 @@ def main():
         seed=args.seed,
         ignore_empty_classes=args.ignore_empty,
         show_plot=args.show_plot,
-        test_pids=test_pids
+        test_pids=test_pids,
     )
 
     # Aggregate and print CV-style summary (single mode will just print the same)

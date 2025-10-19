@@ -75,17 +75,17 @@ class Trainer:
         self.use_wandb = bool(self.args.get("use_wandb", False))
         if self.use_wandb:
             try:
-                api_key = os.getenv("WANDB_API_KEY")
-                wandb.login(key=api_key)
+                # api_key = os.getenv("WANDB_API_KEY")
+                # wandb.login(key=api_key)
 
-                name = f"{self.exp_id}_fold_{fold_num}"
-                wandb.init(
-                    project="ubpd",
-                    group=self.exp_id,
-                    name=name,
-                    config=self.args,
-                    reinit=True,
-                )
+                # name = f"{self.exp_id}_fold_{fold_num}"
+                # wandb.init(
+                #     project="ubpd",
+                #     group=self.exp_id,
+                #     name=name,
+                #     config=self.args,
+                #     reinit=True,
+                # )
                 wandb.watch(
                     self.model,
                     log="gradients",
@@ -279,7 +279,7 @@ class Trainer:
         if self.use_wandb:
             if stopped_early:
                 wandb.summary["early_stopped"] = True
-            wandb.finish()
+            # wandb.finish()
         return history
 
     def validate(self) -> Tuple[float, float]:
