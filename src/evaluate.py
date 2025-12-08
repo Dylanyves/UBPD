@@ -36,6 +36,8 @@ class Evaluator:
         self.half_precision = bool(half_precision)
         self.ignore_empty = bool(ignore_empty_classes)
 
+        self.test_scores = []
+
         # dataset → English names & hex palette
         self._en_names: Dict[str, str] = {
             "dongmai": "artery",
@@ -44,10 +46,10 @@ class Evaluator:
             "shenjing": "nerve",
         }
         self._colors_hex: Dict[str, str] = {
-            "dongmai": "#27ae60",
-            "jingmai": "#2980b9",
-            "jirouzuzhi": "#f39c12",
-            "shenjing": "#e74c3c",
+            "dongmai":   "#e74c3c",  # artery -> red
+            "jingmai":   "#2980b9",  # vein -> blue
+            "jirouzuzhi":"#f39c12",  # muscle -> orange
+            "shenjing":  "#27ae60",  # nerve -> green
         }
 
         # id → raw dataset name (fallback to class_i)
@@ -194,17 +196,40 @@ class Evaluator:
     def evaluate_dice_score(
         self, show_plot: bool = True
     ) -> Dict[int, Dict[str, float]]:
-        """Compute per-class Dice (no background), print mean±std, and show a clean box plot."""
+        """
+        Compute per-class Dice (no background), print mean±std, show a clean box plot,
+        and store per-image Dice scores (float) into self.test_scores.
+
+        For binary (K == 1): store foreground Dice per image.
+        For multiclass (K > 1): store only the Dice score of the 'nerve' class per image.
+        """
         class_idxs, class_labels = self._class_indices_and_labels()
 
+        # reset per-image scores
+        self.test_scores = []
+
+        # storage for per-class stats across ALL images
         per_class_scores: Dict[int, List[float]] = {c: [] for c in class_idxs}
-        pooled_scores: List[float] = []
+        pooled_scores: List[float] = []  # pool of all foreground-class dice vals
+
+        # figure out which class id is "nerve" (dataset raw name "shenjing")
+        nerve_class_id: Optional[int] = None
+        if self.K > 1:
+            # self.id2name maps class_id -> raw dataset name ("dongmai","shenjing",...)
+            for cid, raw_name in self.id2name.items():
+                if raw_name == "shenjing":
+                    nerve_class_id = cid
+                    break
+            # sanity: if not found, leave it as None and we'll just skip storing per-image scores
 
         for images, masks, *rest in self.loader:
             images = images.to(self.device, non_blocking=True)
             masks = masks.to(self.device, non_blocking=True)
 
+            # forward pass
             logits = self._forward(images)
+
+            # postprocess to one-hot preds and gts for per-class Dice aggregation
             preds_oh = self._postprocess_logits(logits)
             t_oh = (
                 masks.float().unsqueeze(1)
@@ -214,12 +239,20 @@ class Evaluator:
                 .float()
             )
 
+            # ---- 1) per-class Dice distribution (for stats/plots) ----
+            # we'll optionally grab the nerve-only dice here too
+            nerve_batch_dice = None  # [B] or None
+
             for c in class_idxs:
-                pc = preds_oh[:, (0 if self.K == 1 else c), ...]
-                tc = t_oh[:, (0 if self.K == 1 else c), ...]
-                inter = (pc * tc).flatten(1).sum(dim=1)
-                denom = pc.flatten(1).sum(dim=1) + tc.flatten(1).sum(dim=1)
-                dice_ci = (2 * inter + 1e-6) / (denom + 1e-6)  # [B]
+                # select the correct channel (binary model always channel 0)
+                pc = preds_oh[:, (0 if self.K == 1 else c), ...]  # [B,H,W]
+                tc = t_oh[:, (0 if self.K == 1 else c), ...]      # [B,H,W]
+
+                inter = (pc * tc).flatten(1).sum(dim=1)  # [B]
+                denom = pc.flatten(1).sum(dim=1) + tc.flatten(1).sum(dim=1)  # [B]
+                dice_ci = (2 * inter + 1e-6) / (denom + 1e-6)   # [B]
+
+                # record this class's dice values for global stats
                 vals = (
                     (dice_ci[denom > 0] if self.ignore_empty else dice_ci)
                     .detach()
@@ -229,7 +262,41 @@ class Evaluator:
                 per_class_scores[c].extend(vals)
                 pooled_scores.extend(vals)
 
-        # stats
+                # capture per-image nerve dice if this is the nerve class
+                if self.K > 1 and nerve_class_id is not None and c == nerve_class_id:
+                    # respect ignore_empty for nerve specifically
+                    if self.ignore_empty:
+                        nerve_batch_dice = torch.where(
+                            denom > 0,
+                            dice_ci,
+                            torch.tensor(float("nan"), device=dice_ci.device),
+                        )
+                    else:
+                        nerve_batch_dice = dice_ci
+
+                # capture per-image foreground dice if binary
+                if self.K == 1:
+                    # binary, only foreground class. We'll store this later.
+                    if self.ignore_empty:
+                        nerve_batch_dice = torch.where(
+                            denom > 0,
+                            dice_ci,
+                            torch.tensor(float("nan"), device=dice_ci.device),
+                        )
+                    else:
+                        nerve_batch_dice = dice_ci
+
+            # ---- 2) store per-image dice in self.test_scores ----
+            # binary: nerve_batch_dice is actually foreground dice
+            # multiclass: nerve_batch_dice is nerve dice (or None if nerve wasn't found)
+            if nerve_batch_dice is not None:
+                self.test_scores.extend(nerve_batch_dice.detach().cpu().tolist())
+            else:
+                # multiclass but no nerve class found in this dataset:
+                # we won't append anything; length may not match dataset size.
+                pass
+
+        # ---- 3) summary stats (mean, std, etc.) ----
         stats: Dict[int, Dict[str, float]] = {}
         for c in class_idxs:
             arr = np.asarray(per_class_scores[c], dtype=np.float32)
@@ -239,6 +306,7 @@ class Evaluator:
                 "median": float(np.nanmedian(arr)) if arr.size else float("nan"),
                 "n": int(arr.size),
             }
+
         pooled_arr = np.asarray(pooled_scores, dtype=np.float32)
         overall = {
             "mean": float(np.nanmean(pooled_arr)) if pooled_arr.size else float("nan"),
@@ -246,7 +314,7 @@ class Evaluator:
             "n": int(pooled_arr.size),
         }
 
-        # console summary
+        # ---- 4) console summary ----
         mode_txt = (
             "IGNORING empties" if self.ignore_empty else "INCLUDING empties as Dice=1"
         )
@@ -257,16 +325,30 @@ class Evaluator:
         for c, lbl in zip(class_idxs, class_labels):
             s = stats[c]
             print(
-                f"  {lbl:<20s} mean±std: {s['mean']:.4f} ± {s['std']:.4f}  (median={s['median']:.4f}, n={s['n']})"
+                f"  {lbl:<20s} mean±std: {s['mean']:.4f} ± {s['std']:.4f}  "
+                f"(median={s['median']:.4f}, n={s['n']})"
             )
 
-        # plot
+        # print a short summary of what we stored
+        target_label = "nerve" if self.K > 1 else "foreground"
+        print(
+            f"\n🧪 Stored per-image Dice scores for '{target_label}': {len(self.test_scores)} images"
+        )
+        if len(self.test_scores) > 0:
+            ts_arr = np.asarray(self.test_scores, dtype=np.float32)
+            print(
+                f"  {target_label} mean±std: "
+                f"{float(np.nanmean(ts_arr)):.4f} ± {float(np.nanstd(ts_arr)):.4f}"
+            )
+
+        # ---- 5) plot ----
         if show_plot and len(class_idxs) > 0:
             self._plot_per_class_box(
                 per_class_scores, class_idxs, class_labels, stats, overall
             )
 
         return {"overall": overall, **stats}
+
 
     # ----------- Public: visualization ----------- #
     @torch.no_grad()
@@ -550,3 +632,173 @@ class Evaluator:
             plt.close(fig)
         else:
             plt.show()
+
+    @torch.no_grad()
+    def visualize_single(
+        self,
+        index: int,
+        alpha: float = 0.45,
+    ) -> None:
+        """
+        Visualize ground truth vs prediction for a single sample from the dataset
+        at the given global index.
+
+        - Shows GT overlay and Pred overlay side by side.
+        - suptitle includes <image_id> and overall Dice score.
+        - Prints per-class Dice scores (excluding background).
+        """
+        # ----- 1. get the sample from dataset -----
+        sample = self.ds[index]  # UBPDataset __getitem__ expected to return (img, mask, meta?)
+        if isinstance(sample, (list, tuple)) and len(sample) >= 2:
+            img_t, mask_t = sample[:2]
+            meta = sample[2] if len(sample) >= 3 else None
+        else:
+            img_t, mask_t, meta = sample, None, None  # defensive
+
+        # keep CPU copies for overlay later
+        img_cpu = img_t.clone()
+        mask_cpu = mask_t.clone()
+
+        # move to device & add batch dim
+        img_b = img_t.unsqueeze(0).to(self.device)
+        mask_b = mask_t.unsqueeze(0).long().to(self.device)
+
+        # ----- 2. forward pass -----
+        with autocast(
+            device_type=("cuda" if self.device.type == "cuda" else "cpu"),
+            dtype=torch.float16,
+            enabled=self._autocast_enabled(),
+        ):
+            logits_b = self.model(img_b)
+
+        # predicted mask [H,W]
+        if self.K == 1:
+            preds_b = (torch.sigmoid(logits_b) > 0.5).long().squeeze(1)
+        else:
+            preds_b = logits_b.argmax(dim=1)
+
+        pred_mask = preds_b[0].detach().cpu().numpy().astype(np.int32)
+        gt_mask = mask_cpu.detach().cpu().numpy().astype(np.int32)
+
+        # ----- 3. compute Dice for this sample -----
+        # overall dice + per-class dice map
+        per_class_dict = {}  # str -> float
+
+        if self.K == 1:
+            # binary dice for that one element
+            probs = torch.sigmoid(logits_b[0:1])                 # [1,1,H,W]
+            pred_bin = (probs > 0.5).long().squeeze(1)           # [1,H,W]
+            tgt_bin = mask_b[0:1].long()                         # [1,H,W]
+
+            inter = (pred_bin * tgt_bin).flatten(1).sum(dim=1).float()  # [1]
+            denom = pred_bin.flatten(1).sum(dim=1).float() + tgt_bin.flatten(1).sum(dim=1).float()
+            dice_val = (2 * inter + 1e-6) / (denom + 1e-6)             # [1]
+
+            # handle ignore_empty for overall
+            if self.ignore_empty:
+                dice_val = torch.where(
+                    denom > 0,
+                    dice_val,
+                    torch.tensor(float("nan"), device=dice_val.device),
+                )
+
+            dice_score = float(dice_val[0].item())
+
+            # per-class dict: only one FG class called "foreground"
+            per_class_dict["foreground"] = dice_score
+
+        else:
+            # multiclass dice excluding background
+            C = self.K
+            pred_1h = F.one_hot(preds_b[0], num_classes=C).permute(2, 0, 1).float()  # [C,H,W]
+            tgt_1h = F.one_hot(mask_b[0], num_classes=C).permute(2, 0, 1).float()    # [C,H,W]
+
+            pred_fg = pred_1h[1:, ...]  # [C-1,H,W] (skip bg=0)
+            tgt_fg = tgt_1h[1:, ...]    # [C-1,H,W]
+
+            inter = (pred_fg * tgt_fg).sum(dim=(1, 2))  # [C-1]
+            denom = pred_fg.sum(dim=(1, 2)) + tgt_fg.sum(dim=(1, 2))  # [C-1]
+
+            dice_c = (2 * inter + 1e-6) / (denom + 1e-6)  # [C-1]
+
+            if self.ignore_empty:
+                dice_c_masked = torch.where(
+                    denom > 0,
+                    dice_c,
+                    torch.tensor(float("nan"), device=dice_c.device),
+                )
+                dice_val = torch.nanmean(dice_c_masked)
+            else:
+                dice_val = dice_c.mean()
+
+            dice_score = float(dice_val.item())
+
+            # build per_class_dict for each foreground class id c=1..C-1
+            class_idxs, class_labels = self._class_indices_and_labels()
+            # class_idxs aligns with ids 1..C-1, and class_labels are english names in same order
+            for local_idx, c in enumerate(class_idxs):
+                # dice_c[local_idx] corresponds to class c
+                d_val = dice_c[local_idx].item()
+                if self.ignore_empty and denom[local_idx].item() <= 0:
+                    d_val = float("nan")
+
+                per_class_dict[class_labels[local_idx]] = float(d_val)
+
+        # ----- 4. get human-readable ID for this sample -----
+        true_id = self._extract_true_id(
+            abs_index=index,
+            meta=[meta] if meta is not None else None,
+            i_in_batch=0,
+        )
+
+        # ----- 5. prep overlays for plotting -----
+        class_colors = self._class_colors_rgb()
+
+        img_np = self._to_numpy_img(img_cpu)
+        gt_rgb = self._colorize_mask(gt_mask, class_colors)
+        pr_rgb = self._colorize_mask(pred_mask, class_colors)
+        img_rgb = np.stack([img_np, img_np, img_np], axis=-1)
+
+        gt_overlay = (1 - alpha) * img_rgb + alpha * gt_rgb
+        pr_overlay = (1 - alpha) * img_rgb + alpha * pr_rgb
+
+        # ----- 6. print dice scores to console -----
+        print(f"\n📌 Sample index {index}  |  ID: {true_id}")
+        print(f"Overall Dice: {dice_score:.4f}")
+        print("Per-class Dice (no background):")
+        for cls_name, d_val in per_class_dict.items():
+            if np.isnan(d_val):
+                print(f"  {cls_name:<15s}: nan (class absent / ignored)")
+            else:
+                print(f"  {cls_name:<15s}: {d_val:.4f}")
+
+        # ----- 7. plot -----
+        plt.style.use("seaborn-v0_8-whitegrid")
+        fig, axes = plt.subplots(
+            1, 2, figsize=(10.6, 4.4), gridspec_kw={"wspace": 0.01}
+        )
+        for ax in axes:
+            ax.set_facecolor("white")
+
+        axes[0].imshow(gt_overlay)
+        axes[0].axis("off")
+        axes[0].set_title("Ground truth", fontsize=12, weight="bold", pad=3)
+
+        axes[1].imshow(pr_overlay)
+        axes[1].axis("off")
+        axes[1].set_title("Prediction", fontsize=12, weight="bold", pad=3)
+
+        # optional classes present string for context
+        cls_str = self._present_classes_str(gt_mask)
+
+        supt = f"{true_id} • Dice {dice_score:.3f}"
+        if cls_str:
+            supt += f" • [{cls_str}]"
+        supt += " • ignore-empty" if self.ignore_empty else " • include-empty"
+
+        fig.suptitle(supt, fontsize=12.5, weight="bold", y=1)
+        fig.subplots_adjust(
+            left=0.01, right=0.99, top=0.92, bottom=0.02, wspace=0.01
+        )
+
+        plt.show()
