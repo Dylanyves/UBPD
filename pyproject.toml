@@ -10,6 +10,7 @@ dependencies = [
     "numpy>=2.2.6",
     "pillow>=11.3.0",
     "pytest>=8.4.2",
+    "ruff>=0.14.8",
     "scikit-learn>=1.7.2",
     "seaborn>=0.13.2",
     "torch>=2.8.0",

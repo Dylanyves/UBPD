@@ -151,7 +151,7 @@ def experiment(variants):
         if history["val_loss"]:
             best_idx = int(np.argmin(history["val_loss"]))
             print(
-                f"  ✅ Best @ epoch {best_idx+1}: val_loss={history['val_loss'][best_idx]:.4f} | val_dice={history['val_dice'][best_idx]:.4f}"
+                f"  ✅ Best @ epoch {best_idx + 1}: val_loss={history['val_loss'][best_idx]:.4f} | val_dice={history['val_dice'][best_idx]:.4f}"
             )
         print("-" * 60)
 

@@ -28,7 +28,6 @@ from src.helper import (
     load_model,
     aggregate_fold_metrics,
     _make_paired_transform,
-    get_train_test_pids,
 )
 from src.dataset import UBPDataset
 from src.evaluate import Evaluator

@@ -17,11 +17,14 @@ class DoubleConv(nn.Module):
         p: float = 0.0,
     ):
         super().__init__()
-        N = lambda c: (
-            nn.Identity()
-            if norm == "none"
-            else (nn.BatchNorm2d(c) if norm == "bn" else nn.GroupNorm(groups, c))
-        )
+
+        def N(c):
+            if norm == "none":
+                return nn.Identity()
+            if norm == "bn":
+                return nn.BatchNorm2d(c)
+            return nn.GroupNorm(groups, c)
+
         self.block = nn.Sequential(
             nn.Conv2d(in_ch, out_ch, 3, padding=1, bias=False),
             N(out_ch),

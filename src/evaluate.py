@@ -46,10 +46,10 @@ class Evaluator:
             "shenjing": "nerve",
         }
         self._colors_hex: Dict[str, str] = {
-            "dongmai":   "#e74c3c",  # artery -> red
-            "jingmai":   "#2980b9",  # vein -> blue
-            "jirouzuzhi":"#f39c12",  # muscle -> orange
-            "shenjing":  "#27ae60",  # nerve -> green
+            "dongmai": "#e74c3c",  # artery -> red
+            "jingmai": "#2980b9",  # vein -> blue
+            "jirouzuzhi": "#f39c12",  # muscle -> orange
+            "shenjing": "#27ae60",  # nerve -> green
         }
 
         # id → raw dataset name (fallback to class_i)
@@ -246,11 +246,11 @@ class Evaluator:
             for c in class_idxs:
                 # select the correct channel (binary model always channel 0)
                 pc = preds_oh[:, (0 if self.K == 1 else c), ...]  # [B,H,W]
-                tc = t_oh[:, (0 if self.K == 1 else c), ...]      # [B,H,W]
+                tc = t_oh[:, (0 if self.K == 1 else c), ...]  # [B,H,W]
 
                 inter = (pc * tc).flatten(1).sum(dim=1)  # [B]
                 denom = pc.flatten(1).sum(dim=1) + tc.flatten(1).sum(dim=1)  # [B]
-                dice_ci = (2 * inter + 1e-6) / (denom + 1e-6)   # [B]
+                dice_ci = (2 * inter + 1e-6) / (denom + 1e-6)  # [B]
 
                 # record this class's dice values for global stats
                 vals = (
@@ -348,7 +348,6 @@ class Evaluator:
             )
 
         return {"overall": overall, **stats}
-
 
     # ----------- Public: visualization ----------- #
     @torch.no_grad()
@@ -648,7 +647,9 @@ class Evaluator:
         - Prints per-class Dice scores (excluding background).
         """
         # ----- 1. get the sample from dataset -----
-        sample = self.ds[index]  # UBPDataset __getitem__ expected to return (img, mask, meta?)
+        sample = self.ds[
+            index
+        ]  # UBPDataset __getitem__ expected to return (img, mask, meta?)
         if isinstance(sample, (list, tuple)) and len(sample) >= 2:
             img_t, mask_t = sample[:2]
             meta = sample[2] if len(sample) >= 3 else None
@@ -686,13 +687,16 @@ class Evaluator:
 
         if self.K == 1:
             # binary dice for that one element
-            probs = torch.sigmoid(logits_b[0:1])                 # [1,1,H,W]
-            pred_bin = (probs > 0.5).long().squeeze(1)           # [1,H,W]
-            tgt_bin = mask_b[0:1].long()                         # [1,H,W]
+            probs = torch.sigmoid(logits_b[0:1])  # [1,1,H,W]
+            pred_bin = (probs > 0.5).long().squeeze(1)  # [1,H,W]
+            tgt_bin = mask_b[0:1].long()  # [1,H,W]
 
             inter = (pred_bin * tgt_bin).flatten(1).sum(dim=1).float()  # [1]
-            denom = pred_bin.flatten(1).sum(dim=1).float() + tgt_bin.flatten(1).sum(dim=1).float()
-            dice_val = (2 * inter + 1e-6) / (denom + 1e-6)             # [1]
+            denom = (
+                pred_bin.flatten(1).sum(dim=1).float()
+                + tgt_bin.flatten(1).sum(dim=1).float()
+            )
+            dice_val = (2 * inter + 1e-6) / (denom + 1e-6)  # [1]
 
             # handle ignore_empty for overall
             if self.ignore_empty:
@@ -710,11 +714,15 @@ class Evaluator:
         else:
             # multiclass dice excluding background
             C = self.K
-            pred_1h = F.one_hot(preds_b[0], num_classes=C).permute(2, 0, 1).float()  # [C,H,W]
-            tgt_1h = F.one_hot(mask_b[0], num_classes=C).permute(2, 0, 1).float()    # [C,H,W]
+            pred_1h = (
+                F.one_hot(preds_b[0], num_classes=C).permute(2, 0, 1).float()
+            )  # [C,H,W]
+            tgt_1h = (
+                F.one_hot(mask_b[0], num_classes=C).permute(2, 0, 1).float()
+            )  # [C,H,W]
 
             pred_fg = pred_1h[1:, ...]  # [C-1,H,W] (skip bg=0)
-            tgt_fg = tgt_1h[1:, ...]    # [C-1,H,W]
+            tgt_fg = tgt_1h[1:, ...]  # [C-1,H,W]
 
             inter = (pred_fg * tgt_fg).sum(dim=(1, 2))  # [C-1]
             denom = pred_fg.sum(dim=(1, 2)) + tgt_fg.sum(dim=(1, 2))  # [C-1]
@@ -797,8 +805,6 @@ class Evaluator:
         supt += " • ignore-empty" if self.ignore_empty else " • include-empty"
 
         fig.suptitle(supt, fontsize=12.5, weight="bold", y=1)
-        fig.subplots_adjust(
-            left=0.01, right=0.99, top=0.92, bottom=0.02, wspace=0.01
-        )
+        fig.subplots_adjust(left=0.01, right=0.99, top=0.92, bottom=0.02, wspace=0.01)
 
         plt.show()

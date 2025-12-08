@@ -3,8 +3,6 @@ import json
 import matplotlib.pyplot as plt
 import torch
 import numpy as np
-import random
-import torchvision.transforms.functional as TF
 
 from typing import List, Optional, Callable, Tuple
 from PIL import Image, ImageDraw

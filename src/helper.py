@@ -117,10 +117,8 @@ def _make_paired_transform(size: int = 400, aug: bool = True):
     """Return a callable joint_transform(image, mask) -> (image_tensor, mask_tensor).
     Uses torchvision transforms for simple resizing and optional flips/rotations.
     """
-    from torchvision.transforms import InterpolationMode
     import torchvision.transforms.functional as TF
     from PIL import Image
-    import torch
 
     def joint(img: Image.Image, mask: Image.Image):
         # Resize both (antialias for image; nearest for mask)
@@ -252,7 +250,6 @@ def aggregate_fold_metrics(fold_results_list):
     per_class_stats = {}
     for cid, vals in per_class_vals.items():
         arr = np.array(vals, dtype=np.float32)
-        valid = arr[~np.isnan(arr)]
         per_class_stats[cid] = {
             "mean": float(np.nanmean(arr)) if arr.size else float("nan"),
             "std": float(np.nanstd(arr)) if arr.size else float("nan"),
