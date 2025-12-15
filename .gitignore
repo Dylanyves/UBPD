@@ -21,3 +21,32 @@ wandb/
 /checkpoints
 checkpoints/
 checkpoints_2/
+
+# IDE / editor
+.vscode/
+.idea/
+*.iml
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Python cache / test output
+.pytest_cache/
+.mypy_cache/
+.cache/
+.coverage
+htmlcov/
+
+# Logs and runtime files
+*.log
+logs/
+
+# OS files
+.DS_Store
+
+# Environment / secrets
+.env*
+env/
+
+# Local notebook state (if present)
+src/notebooks/*.ipynb
