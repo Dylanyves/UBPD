@@ -28,6 +28,7 @@ from src.helper import (
     load_model,
     aggregate_fold_metrics,
     _make_paired_transform,
+    get_train_test_pids
 )
 from src.dataset import UBPDataset
 from src.evaluate import Evaluator
@@ -351,10 +352,7 @@ def main():
 
     device = torch.device(args.device)
 
-    if args.u1:
-        test_pids = [16, 19, 12, 28, 40]
-    if args.u2:
-        test_pids = [79, 77, 71, 63, 51, 1, 81, 61]
+    _, test_pids = get_train_test_pids(seed=args.seed)
 
     evaluator_results, id_to_en = evaluate_model_files(
         model_paths=model_paths,
