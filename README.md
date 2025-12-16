@@ -228,3 +228,5 @@ src/
 - Cross-validation uses stratified k-fold splitting for consistent results
 - Class indices are remapped to contiguous IDs (0=background) during multi-class training
 - All training runs are logged to Weights & Biases for easy tracking and comparison
+
+- **Hardware / Requirements:** Experiments were run on a 16 GB NVIDIA Tesla V100 GPU. The minimum practical GPU requirement is about 4 GB of VRAM; however, memory usage can be reduced by enabling mixed precision (`--half_precision`) and lowering `--batch_size` (or using smaller `--image_size`), allowing runs on GPUs with less memory.

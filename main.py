@@ -229,7 +229,7 @@ if __name__ == "__main__":
     parser.add_argument("--image_size", type=int, default=256)
     parser.add_argument("--patience", type=int, default=15)
     parser.add_argument(
-        "--half_precision", type=str2bool, nargs="?", const=True, default=True
+        "--half_precision", type=str2bool, nargs="?", const=True, default=False
     )
     parser.add_argument(
         "--ignore_empty", type=str2bool, nargs="?", const=True, default=False
