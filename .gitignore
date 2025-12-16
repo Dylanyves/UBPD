@@ -10,7 +10,9 @@ wheels/
 .venv
 
 # Ignore dataset and large data files
-/data/
+/data/models/*
+/data/learning_curves/*
+/data/imgs/*
 
 .env
 env/

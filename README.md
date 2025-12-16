@@ -1,7 +1,11 @@
 # UBPD: Ultrasound Brachial Plexus Deep Learning Segmentation
 ## Overview
 
-UBPD is a deep learning project for training and evaluating U-Net and U-Net++ models to perform semantic segmentation of ultrasound images of the brachial plexus. The project focuses on automatically detecting and segmenting anatomical structures (arteries, veins, muscles, and nerves) within ultrasound images using convolutional neural networks.
+UBPD is a deep learning project for training and evaluating U-Net model to perform semantic segmentation of ultrasound images of the brachial plexus. The project focuses on automatically detecting and segmenting anatomical structures (arteries, veins, muscles, and nerves) within ultrasound images using convolutional neural networks. 
+
+This repo is based on a study by Ding, Yi, Qiqi Yang, Yiqian Wang, Dajiang Chen, Zhiguang Qin, and Jian Zhang. "MallesNet: A multi-object assistance based network for brachial plexus segmentation in ultrasound images." Medical Image Analysis 80 (2022): 102511. 
+
+Dataset and related resources are available at: https://ubpd.worldwidetracing.com:9443/.
 
 ### Core Functionality
 
@@ -230,3 +234,10 @@ src/
 - All training runs are logged to Weights & Biases for easy tracking and comparison
 
 - **Hardware / Requirements:** Experiments were run on a 16 GB NVIDIA Tesla V100 GPU. The minimum practical GPU requirement is about 4 GB of VRAM; however, memory usage can be reduced by enabling mixed precision (`--half_precision`) and lowering `--batch_size` (or using smaller `--image_size`), allowing runs on GPUs with less memory.
+
+## Contributor
+Name: Dylan Mac Yves 
+
+Student ID: 65130500245
+
+Email: dylan.yves@mail.kmutt.ac.th
